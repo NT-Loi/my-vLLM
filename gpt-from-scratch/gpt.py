@@ -1,4 +1,3 @@
-from torch import device
 import torch
 import torch.nn as nn
 
@@ -40,6 +39,8 @@ class CausalAttention(nn.Module):
             print("Input length exceeds maximum supported context length.")
             return None
 
+        assert inputs.shape[-2] <= self.context_length, "d_out must be divisible by num_heads"
+
         queries = self.W_Q(inputs)
         keys = self.W_K(inputs)
         values = self.W_V(inputs)
@@ -63,9 +64,7 @@ class MultiHeadAttention(nn.Module):
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
 
-        if d_out % num_heads != 0:
-            print("d_out must be divisible by num_heads")
-            return 
+        assert d_out % num_heads == 0, "d_out must be divisible by num_heads"
 
         self.d_in = d_in        
         self.d_out = d_out
@@ -259,6 +258,13 @@ class GPT(nn.Module):
             blk.mha.reset_cache()
         self.current_pos = 0
 
+    def analyze_kv_cache(self):
+        for blk in self.trf_blocks:
+            # print(blk.mha.cache_k)
+            print(blk.mha.cache_k.shape) # (b, num_tokens, num_heads, head_dim)
+            # print(blk.mha.cache_v)
+            # print(blk.mha.cache_v.shape)
+
 def generate_text_simple_cached(model, idx, max_new_tokens, 
                                 context_size=None, use_cache=True):
     model.eval()
@@ -320,12 +326,14 @@ if __name__ == "__main__":
     # print("\nOutput shape:", outputs.shape)
     # print(outputs)
 
-    # import time
-    # start = time.time()
+    import time
+    start = time.time()
     outputs = generate_text_simple_cached(model, batch, max_new_tokens=20, context_size=20, use_cache=True) 
-    # end = time.time()
+    end = time.time()
     print(outputs)
-    # print("Tokens per Second:", float(torch.sum(torch.ones_like(batch)))/(end-start))   
+    print("Tokens per Second:", float(torch.sum(torch.ones_like(batch)))/(end-start))   
 
     print(tokenizer.decode(list(outputs[0])))
     print(tokenizer.decode(list(outputs[1])))
+
+    # model.analyze_kv_cache()
