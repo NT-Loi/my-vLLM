@@ -8,8 +8,8 @@ GPT_CONFIG_124M = {
     "vocab_size": 50257,    # Vocabulary size
     "context_length": 1024, # Context length
     "emb_dim": 768,         # Embedding dimension
-    "num_heads": 12,          # Number of attention heads
-    "num_layers": 12,         # Number of layers
+    "num_heads": 12,        # Number of attention heads
+    "num_layers": 12,       # Number of layers
     "drop_rate": 0.1,       # Dropout rate
     "qkv_bias": False       # Query-Key-Value bias
 }
@@ -244,7 +244,7 @@ class GPT(nn.Module):
             pos_ids = torch.arange(seq_len)
 
         tok_embeds = self.tok_emb(in_idx)
-        pos_embeds = self.pos_emb(pos_ids)
+        pos_embeds = self.pos_emb(pos_ids).unsqueeze(0)
         x = tok_embeds + pos_embeds  # Shape [batch_size, num_tokens, emb_size]
         x = self.drop_emb(x)
         # x = self.trf_blocks(x)
@@ -264,7 +264,7 @@ def generate_text_simple_cached(model, idx, max_new_tokens,
     model.eval()
     ctx_len = context_size or model.pos_emb.num_embeddings # context_length
 
-    with torch.no_grad():
+    with torch.inference_mode():
         if use_cache:
             # Init cache with full prompt
             model.reset_kv_cache()
@@ -320,9 +320,12 @@ if __name__ == "__main__":
     # print("\nOutput shape:", outputs.shape)
     # print(outputs)
 
-    import time
-    start = time.time()
-    outputs = generate_text_simple_cached(model, batch, max_new_tokens=20, context_size=20, use_cache=False) 
-    end = time.time()
+    # import time
+    # start = time.time()
+    outputs = generate_text_simple_cached(model, batch, max_new_tokens=20, context_size=20, use_cache=True) 
+    # end = time.time()
     print(outputs)
-    print("Tokens per Second:", float(torch.sum(torch.ones_like(batch)))/(end-start))   
+    # print("Tokens per Second:", float(torch.sum(torch.ones_like(batch)))/(end-start))   
+
+    print(tokenizer.decode(list(outputs[0])))
+    print(tokenizer.decode(list(outputs[1])))
