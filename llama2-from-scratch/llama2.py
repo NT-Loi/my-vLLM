@@ -18,12 +18,12 @@ class LlamaTokenizer:
 class RMSNorm(nn.Module):
     def __init__(self, emb_dim, eps=1e-5):
         super().__init__()
-        self.scale = nn.Parameter(torch.ones(emb_dim))
+        self.weight = nn.Parameter(torch.ones(emb_dim))
         self.eps = eps
 
     def forward(self, x):
         rms_x = (torch.mean(x**2, dim=-1, keepdim=True) + self.eps) ** 0.5
-        return ((x / rms_x) * self.scale).to(dtype=x.dtype)
+        return ((x / rms_x) * self.weight).to(dtype=x.dtype)
 
 class SiLU(nn.Module):
     def __init__(self):
@@ -87,12 +87,8 @@ def compute_rope(x, cos, sin):
     return x_rotated.to(dtype=x.dtype)
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_in, d_out, context_length, num_heads, dtype=None, device=None):
+    def __init__(self, d_in, d_out, context_length, num_heads, dtype=None):
         super().__init__()
-
-        if not device:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.device = device
 
         assert d_out % num_heads == 0, "d_out must be divisible by num_heads"
 
@@ -102,11 +98,11 @@ class MultiHeadAttention(nn.Module):
         self.head_dim = self.d_out // self.num_heads
         self.context_length = context_length
 
-        self.W_Q = nn.Linear(in_features = self.d_in, out_features = self.d_out, bias=False, dtype=dtype, device = self.device)
-        self.W_K = nn.Linear(in_features = self.d_in, out_features = self.d_out, bias=False, dtype=dtype, device = self.device)
-        self.W_V = nn.Linear(in_features = self.d_in, out_features = self.d_out, bias=False, dtype=dtype, device = self.device)
+        self.W_Q = nn.Linear(in_features = self.d_in, out_features = self.d_out, bias=False, dtype=dtype)
+        self.W_K = nn.Linear(in_features = self.d_in, out_features = self.d_out, bias=False, dtype=dtype)
+        self.W_V = nn.Linear(in_features = self.d_in, out_features = self.d_out, bias=False, dtype=dtype)
 
-        mask = torch.triu(torch.full((self.d_in, self.d_in), -torch.inf), diagonal=1)
+        mask = torch.triu(torch.full((self.context_length, self.context_length), -torch.inf, dtype=dtype), diagonal=1)
         self.register_buffer("mask", mask)
 
         # KV cache
@@ -114,7 +110,7 @@ class MultiHeadAttention(nn.Module):
         self.ptr_current_pos = 0
 
         # Optional linear projection layer to combine head outputs
-        self.lin_proj = nn.Linear(in_features=self.d_out, out_features=d_out, bias=False, dtype=dtype)
+        self.out_proj = nn.Linear(in_features=self.d_out, out_features=d_out, bias=False, dtype=dtype)
 
         # Precomputed cos, sin for RoPE rotation
         cos, sin = precompute_rope_params(self.head_dim, context_length=self.context_length)
@@ -126,7 +122,7 @@ class MultiHeadAttention(nn.Module):
 
         queries = self.W_Q(inputs)
         keys_new = self.W_K(inputs)
-        values_new = self.W_V(inputs)
+        values_new = self.W_V(inputs)               
 
         queries = queries.view(b, num_tokens, self.num_heads, self.head_dim)
         keys_new = keys_new.view(b, num_tokens, self.num_heads, self.head_dim)
@@ -171,7 +167,7 @@ class MultiHeadAttention(nn.Module):
         context_vec = context_vec.contiguous().view(b, num_tokens, self.d_out)
 
         # Optional linear projection
-        context_vec = self.lin_proj(context_vec)
+        context_vec = self.out_proj(context_vec)
         return context_vec
 
     def reset_cache(self):
@@ -179,12 +175,8 @@ class MultiHeadAttention(nn.Module):
         self.ptr_current_pos = 0
 
 class TransformerBlock(nn.Module):
-    def __init__(self, emb_dim, hidden_dim, context_length, num_heads, dtype, device:str = None):
+    def __init__(self, emb_dim, hidden_dim, context_length, num_heads, dtype):
         super().__init__()
-
-        if not device:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.device = device
 
         if emb_dim % num_heads != 0:
             print("emb_dim must be divisible by num_heads")
@@ -192,7 +184,7 @@ class TransformerBlock(nn.Module):
 
         self.norm1 = RMSNorm(emb_dim)
         self.norm2 = RMSNorm(emb_dim)
-        self.att = MultiHeadAttention(emb_dim, emb_dim, context_length, num_heads, dtype, device)
+        self.att = MultiHeadAttention(emb_dim, emb_dim, context_length, num_heads, dtype)
         self.ff = FeedForward(emb_dim, hidden_dim, dtype)
         
     def forward(self, x, use_cache=False):
@@ -211,18 +203,18 @@ class TransformerBlock(nn.Module):
         return x
 
 class Llama2(nn.Module):
-    def __init__(self, vocab_size, emb_dim, hidden_dim, context_length, num_heads, num_layers, dtype, device:str = None):
+    def __init__(self, vocab_size, emb_dim, hidden_dim, context_length, num_heads, num_layers, dtype):
         super().__init__()
 
-        self.tok_emb = nn.Embedding(vocab_size, emb_dim, dtype=dtype, device=device)
+        self.tok_emb = nn.Embedding(vocab_size, emb_dim, dtype=dtype)
 
         self.trf_blocks = nn.ModuleList(
-            [TransformerBlock(emb_dim, hidden_dim, context_length, num_heads, dtype, device)
+            [TransformerBlock(emb_dim, hidden_dim, context_length, num_heads, dtype)
             for _ in range(num_layers)]
         )
 
         self.final_norm = RMSNorm(emb_dim)
-        self.out_head = nn.Linear(emb_dim, vocab_size, bias=False, dtype=dtype, device=device)
+        self.out_head = nn.Linear(emb_dim, vocab_size, bias=False, dtype=dtype)
         
     def forward(self, in_idx, use_cache=False):
         x = self.tok_emb(in_idx)
@@ -298,7 +290,91 @@ def generate(model, idx, max_new_tokens, context_size, temperature=0.0, top_k=No
 
     return idx
 
+def assign(left, right, tensor_name="unknown"):
+    if left.shape != right.shape:
+        raise ValueError(f"Shape mismatch in tensor '{tensor_name}'. Left: {left.shape}, Right: {right.shape}")
+    
+    with torch.no_grad():
+        if isinstance(right, torch.Tensor):
+            left.copy_(right)
+        else:
+            left.copy_(torch.as_tensor(right, dtype=left.dtype, device=left.device))
+
+    return left 
+
+
+def permute(w: torch.Tensor, n_heads, out_dim, in_dim):
+    return (w.view(n_heads, out_dim // n_heads // 2, 2, in_dim)
+             .transpose(1, 2)          # put axis 2 next to heads
+             .reshape(out_dim, in_dim))
+
+
+def load_weights_into_llama(model, cfg, params):
+    
+    model.tok_emb.weight = assign(model.tok_emb.weight, params["tok_embeddings.weight"])
+
+    for l in range(cfg["num_layers"]):
+
+        # The original Meta/Llama checkpoints store Q and K so that the two numbers 
+        # that form one complex RoPE pair sit next to each other inside the head dimension ("sliced" layout).
+        # Our RoPE implementation, similar to the one in Hugging Face, expects an interleaved layout
+        # For example, with n_heads=2 and head_dim = 8
+        #                         ┌── pair 0 ──┐      ┌── pair 1 ──┐
+        # Meta (sliced):    [ h0:  r0 r1 r2 r3,   h1:  r0 r1 r2 r3  ]
+        # Ours & HF (interleaved):  [ h0: r0 r0 r1 r1 r2 r2 r3 r3  , h1: ... ]
+        # For more information, please see the discussion in the PR: https://github.com/rasbt/LLMs-from-scratch/pull/747 
+        
+        # So, below, for q_raw and k_raw, we must re‑order the checkpoint weights using the slices_to_interleave helper
+
+        q_raw = params[f"layers.{l}.attention.wq.weight"]
+        model.trf_blocks[l].att.W_Q.weight = assign(
+            model.trf_blocks[l].att.W_Q.weight,
+            permute(q_raw, cfg["n_heads"], cfg["emb_dim"], cfg["emb_dim"])
+        )
+        k_raw = params[f"layers.{l}.attention.wk.weight"]
+        model.trf_blocks[l].att.W_K.weight = assign(
+            model.trf_blocks[l].att.W_K.weight,
+            permute(k_raw, cfg["n_heads"], cfg["emb_dim"], cfg["emb_dim"])
+        )
+        model.trf_blocks[l].att.W_V.weight = assign(
+            model.trf_blocks[l].att.W_V.weight,
+            params[f"layers.{l}.attention.wv.weight"]
+        )
+        model.trf_blocks[l].att.out_proj.weight = assign(
+            model.trf_blocks[l].att.out_proj.weight,
+            params[f"layers.{l}.attention.wo.weight"]
+        )
+        model.trf_blocks[l].norm1.weight = assign(
+            model.trf_blocks[l].norm1.weight,
+            params[f"layers.{l}.attention_norm.weight"]
+        )
+
+        # Load FeedForward weights
+        model.trf_blocks[l].ff.fc1.weight = assign(
+            model.trf_blocks[l].ff.fc1.weight,
+            params[f"layers.{l}.feed_forward.w1.weight"]
+        )
+        # For some reason w2 and w3 are provided in the wrong order in the weights file
+        model.trf_blocks[l].ff.fc2.weight = assign(
+            model.trf_blocks[l].ff.fc2.weight,
+            params[f"layers.{l}.feed_forward.w3.weight"]
+        )
+        model.trf_blocks[l].ff.fc3.weight = assign(
+            model.trf_blocks[l].ff.fc3.weight,
+            params[f"layers.{l}.feed_forward.w2.weight"]
+        )
+        model.trf_blocks[l].norm2.weight = assign(
+            model.trf_blocks[l].norm2.weight,
+            params[f"layers.{l}.ffn_norm.weight"]
+        )
+
+    # Load output layer weights
+    model.final_norm.weight = assign(model.final_norm.weight, params["norm.weight"])
+    model.out_head.weight = assign(model.out_head.weight, params["output.weight"])
+
 if __name__ == "__main__":
+    torch.manual_seed(123)
+
     LLAMA2_CONFIG_7B = {
         "vocab_size": 32000,     # Vocabulary size
         "context_length": 4096,  # Context length
@@ -334,9 +410,8 @@ if __name__ == "__main__":
 
     tokenizer = LlamaTokenizer(tokenizer_file)
 
-    torch.manual_seed(123)
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
 
     token_ids = generate(
         model=model,
@@ -349,3 +424,24 @@ if __name__ == "__main__":
     )
 
     print("Output text:\n", token_ids_to_text(token_ids, tokenizer))
+
+    weights_file = hf_hub_download(
+        repo_id="meta-llama/Llama-2-7b",
+        filename="consolidated.00.pth",
+        local_dir="Llama-2-7b"
+    )
+
+    weights = torch.load(weights_file, weights_only=True)
+    load_weights_into_llama(model, cfg, weights)
+    model.to(device)
+
+    token_ids = generate(
+        model=model,
+        idx=text_to_token_ids("Every effort", tokenizer).to(device),
+        max_new_tokens=25,
+        context_size=LLAMA2_CONFIG_7B["context_length"],
+        top_k=1,
+        temperature=0.
+    )
+
+    print("Output text:\n", token_ids_to_text(token_ids, tokenizer))    

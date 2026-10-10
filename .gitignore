@@ -11,3 +11,6 @@ wheels/
 
 *.txt
 *.json
+
+# Weights
+Llama-2-7b
